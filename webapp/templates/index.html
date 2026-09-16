@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pokemon Battle Predictor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="bg-pokeball"></div>
+
+  <main class="app">
+    <header class="app-header">
+      <h1>⚡ Pokemon Battle Predictor</h1>
+      <p>Pick two Pokemon and let a logistic regression model call the winner</p>
+    </header>
+
+    <section class="battle-card">
+      <div class="picker">
+        <div class="fighter" id="fighter1">
+          <img id="sprite1" class="sprite" alt="Pokemon 1 sprite" />
+          <label for="select1">Pokemon 1</label>
+          <select id="select1"></select>
+        </div>
+
+        <div class="vs">VS</div>
+
+        <div class="fighter" id="fighter2">
+          <img id="sprite2" class="sprite" alt="Pokemon 2 sprite" />
+          <label for="select2">Pokemon 2</label>
+          <select id="select2"></select>
+        </div>
+      </div>
+
+      <button id="predictBtn">⚔️ Predict winner</button>
+      <p id="errorMsg" class="error-msg"></p>
+    </section>
+
+    <section id="resultCard" class="result-card hidden">
+      <div class="prob-row">
+        <div class="prob-block" id="probBlock1">
+          <span class="prob-name" id="probName1"></span>
+          <div class="prob-bar-track"><div class="prob-bar-fill" id="probFill1"></div></div>
+          <span class="prob-pct" id="probPct1"></span>
+        </div>
+        <div class="prob-block" id="probBlock2">
+          <span class="prob-name" id="probName2"></span>
+          <div class="prob-bar-track"><div class="prob-bar-fill" id="probFill2"></div></div>
+          <span class="prob-pct" id="probPct2"></span>
+        </div>
+      </div>
+
+      <p class="winner-line">Predicted winner: <strong id="winnerName"></strong></p>
+
+      <div class="moves">
+        <p class="factors-title">Best move each side would use</p>
+        <div class="move-row">
+          <div class="move-block" id="moveBlock1"></div>
+          <div class="move-block" id="moveBlock2"></div>
+        </div>
+      </div>
+
+      <div class="factors">
+        <p class="factors-title">What drove this prediction</p>
+        <ul id="factorsList"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
