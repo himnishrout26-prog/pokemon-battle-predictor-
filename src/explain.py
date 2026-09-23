@@ -10,6 +10,12 @@ Two outputs:
 Requires `pip install shap` (not available in the build sandbox -- this
 script is written against the real shap API and should be run locally).
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+ROOT = Path(__file__).resolve().parent.parent
 import joblib
 import pandas as pd
 import shap
@@ -17,8 +23,8 @@ import matplotlib.pyplot as plt
 
 from features import build_features
 
-MODEL_PATH = "models/best_model.joblib"
-FEATURE_COLUMNS_PATH = "models/feature_columns.joblib"
+MODEL_PATH = ROOT / "models" / "best_model.joblib"
+FEATURE_COLUMNS_PATH = ROOT / "models" / "feature_columns.joblib"
 
 
 def load_model():
@@ -27,8 +33,9 @@ def load_model():
     return model, feature_columns
 
 
-def global_summary(features_csv="data/features.csv", sample_size=1000):
-    model, feature_columns = load_model()
+def global_summary(features_csv=None, sample_size=1000):
+    if features_csv is None:
+        features_csv = ROOT / "data" / "features.csv"
     df = pd.read_csv(features_csv).drop(columns=["label"]).sample(
         n=min(sample_size, 100000), random_state=42
     )
@@ -37,7 +44,8 @@ def global_summary(features_csv="data/features.csv", sample_size=1000):
 
     shap.summary_plot(shap_values[..., 1], df, show=False)
     plt.tight_layout()
-    plt.savefig("models/shap_summary.png", dpi=150)
+    plt.savefig(ROOT / "models" / "shap_summary.png", dpi=150)
+    print(f"Saved {ROOT / 'models' / 'shap_summary.png'}")
     plt.close()
     print("Saved models/shap_summary.png")
 

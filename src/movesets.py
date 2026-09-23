@@ -1,27 +1,38 @@
 """
 Simplified moveset model.
 
-Real Pokemon have huge, hand-picked movepools (hundreds of possible moves
-per species). For this project each Pokemon instead gets a small SYNTHETIC
-movepool built from its own type(s) plus a couple of common coverage
-types -- documented here as a deliberate simplification, not hidden.
+Real Pokemon have huge, hand-picked movepools. For this project each
+Pokemon gets a small SYNTHETIC movepool built from its own type(s) plus a
+couple of common coverage types -- documented here as a deliberate
+simplification, not hidden.
 
 Move category (physical vs special) follows the classic Gen 1-3 rule,
 where category is determined by the move's TYPE rather than the
-individual move. This is real, documented Pokemon game history, not a
-made-up shortcut -- it's exactly how damage categories worked before
-Gen 4 introduced the physical/special split per-move.
+individual move. This is real Pokemon game history, not a shortcut.
 """
 from type_chart import type_multiplier
 
 PHYSICAL_TYPES = {
     "normal", "fighting", "flying", "ground", "rock", "bug", "ghost", "poison", "steel",
 }
-# everything else (fire, water, grass, electric, psychic, ice, dragon, dark, fairy) is special
 
 MOVE_POWER = 80
 LEVEL = 50
 COVERAGE_TYPE = "ice"  # generic 4th-slot filler for movepool variety
+
+# Per-type accuracy flavour, loosely modeled on common Gen-1 moves.
+# The simulator rolls against these; the feature builder deliberately does
+# NOT know about accuracy, so the model has to learn stochastic effects.
+MOVE_ACCURACY = {
+    "normal": 1.00, "fire": 1.00, "water": 1.00, "electric": 1.00,
+    "grass": 1.00, "ice": 0.90, "fighting": 1.00, "poison": 1.00,
+    "ground": 1.00, "flying": 0.95, "psychic": 1.00, "bug": 1.00,
+    "rock": 0.90, "ghost": 1.00, "dragon": 0.90, "dark": 1.00,
+    "steel": 0.90, "fairy": 1.00,
+}
+
+CRIT_CHANCE = 0.0625
+CRIT_MULTIPLIER = 1.5
 
 
 def move_category(move_type):
@@ -56,6 +67,8 @@ def get_movepool(pokemon):
 
 
 def move_damage_estimate(attacker, defender, move_type, level=LEVEL, power=MOVE_POWER):
+    """Deterministic base damage (no crit / roll / accuracy) used for both
+    feature building and as the core of the simulator's damage calc."""
     category = move_category(move_type)
     atk_stat = attacker["attack"] if category == "physical" else attacker["sp_atk"]
     def_stat = defender["defense"] if category == "physical" else defender["sp_def"]
@@ -69,9 +82,27 @@ def move_damage_estimate(attacker, defender, move_type, level=LEVEL, power=MOVE_
     return dmg, mult, category
 
 
+def all_moves(attacker, defender):
+    """Every move in the movepool with its estimated damage vs THIS
+    defender, sorted by damage descending. Used by the web UI to show
+    the full movepool and highlight the chosen (best) move."""
+    out = []
+    for move_type in get_movepool(attacker):
+        dmg, mult, category = move_damage_estimate(attacker, defender, move_type)
+        out.append({
+            "move_type": move_type,
+            "damage": round(dmg, 2),
+            "multiplier": mult,
+            "category": category,
+            "accuracy": MOVE_ACCURACY.get(move_type, 1.0),
+        })
+    out.sort(key=lambda m: m["damage"], reverse=True)
+    return out
+
+
 def best_move(attacker, defender):
     """Picks the highest-expected-damage move from attacker's movepool
-    against this specific defender -- this is the 'optimal play' logic."""
+    against this specific defender -- the 'optimal play' logic."""
     movepool = get_movepool(attacker)
     best = None
     for move_type in movepool:

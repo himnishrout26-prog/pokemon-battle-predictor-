@@ -137,3 +137,34 @@ isn't needed since only one runs at a time by default).
 - Add status effects (paralysis/burn/poison/sleep) to the simulator.
 - Multi-Pokemon team battles instead of 1v1.
 - Deploy the Streamlit app publicly and link it from your resume.
+
+
+## WHAT CHANGED IN THE UPDATE
+
+
+- **Simulator is now genuinely stochastic.** Accuracy rolls (per type),
+  6.25% crits at 1.5x, and the real level-50 HP formula
+  (`floor((2*base + 31) * level / 100) + level + 10`). The feature builder
+  deliberately does **not** see accuracy or crits, so the model has to
+  learn stochastic effects instead of reading them off its inputs.
+- **Feature set trimmed to remove leakage.** Dropped `effective_power_ratio`,
+  `ttk_diff`, and `best_move_multiplier_diff` — all monotone transforms
+  of features already present, which made SHAP unstable and made the
+  model look stronger than it was.
+- **Training reports 5-fold CV (mean ± std), Brier score, a calibration
+  plot, permutation importance, and a stat-only baseline.** If the full
+  feature set only beats the stat-only baseline by a hair, that's now
+  visible in the output.
+- **Web UI rebuilt around an animated battle replay, Chart.js analytics
+  (stat radar, per-move damage bar chart, signed-coefficient waterfall,
+  Monte Carlo turn histogram), and move recommendation cards.**
+- **`/api/predict` is a single call** that returns the model prediction,
+  feature contributions, all moves for both sides, a deterministic replay
+  log, and an N-battle simulation.
+- **Tests + Makefile added.**
+
+## Tests
+
+```bash
+pip install -r requirements.txt
+pytest -q

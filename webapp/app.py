@@ -2,27 +2,30 @@
 Flask backend for the custom HTML/CSS/JS Pokemon battle predictor UI.
 
 Uses the plain logistic regression model from src/simple_train.py.
-Explanations come straight from the model's own coefficients -- no SHAP,
-no extra library: contribution = coefficient x scaled_feature_value.
-That's basic, honest linear-model interpretability.
-
-Run with: python3 webapp/app.py   (from the project root)
+Explanations come straight from the model's coefficients:
+    contribution = coefficient x scaled_feature_value (per feature)
+which is exactly that feature's share of the log-odds toward P(p1 wins).
 """
-import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+import random
+import sys
+from collections import Counter
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import joblib
 import pandas as pd
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, render_template, request
 
 from features import build_features
-from movesets import best_move
+from movesets import all_moves
+from battle_simulator import simulate_battle
 
-BASE_DIR = os.path.join(os.path.dirname(__file__), "..")
-MODEL_PATH = os.path.join(BASE_DIR, "models", "simple_model.joblib")
-FEATURE_COLUMNS_PATH = os.path.join(BASE_DIR, "models", "simple_feature_columns.joblib")
-STATS_PATH = os.path.join(BASE_DIR, "data", "pokemon_stats.csv")
+BASE_DIR = Path(__file__).resolve().parent.parent
+MODEL_PATH = BASE_DIR / "models" / "simple_model.joblib"
+FEATURE_COLUMNS_PATH = BASE_DIR / "models" / "simple_feature_columns.joblib"
+STATS_PATH = BASE_DIR / "data" / "pokemon_stats.csv"
 
 app = Flask(__name__)
 
@@ -41,20 +44,7 @@ FEATURE_LABELS = {
     "sp_def_diff": "Sp. Def difference",
     "speed_diff": "Speed difference",
     "speed_advantage": "Speed advantage",
-    "base_stat_total_diff": "Overall stat total",
-    "p1_type_advantage": "Pokemon 1 type matchup",
-    "p2_type_advantage": "Pokemon 2 type matchup",
     "type_advantage_diff": "Type matchup edge",
-    "p1_effective_power": "Pokemon 1 damage output",
-    "p2_effective_power": "Pokemon 2 damage output",
-    "effective_power_diff": "Damage output edge",
-    "effective_power_ratio": "Damage output ratio",
-    "p1_best_move_multiplier": "Pokemon 1 best-move effectiveness",
-    "p2_best_move_multiplier": "Pokemon 2 best-move effectiveness",
-    "best_move_multiplier_diff": "Best-move effectiveness edge",
-    "p1_ttk_estimate": "Pokemon 1 turns-to-KO",
-    "p2_ttk_estimate": "Pokemon 2 turns-to-KO",
-    "ttk_diff": "Turns-to-KO edge",
 }
 
 
@@ -62,14 +52,25 @@ def slugify(name):
     return name.lower().replace(".", "").replace("'", "").replace(" ", "-")
 
 
-def effectiveness_label(multiplier):
-    if multiplier == 0:
+def effectiveness_label(mult):
+    if mult == 0:
         return "No effect"
-    if multiplier >= 2:
+    if mult >= 2:
         return "Super effective"
-    if multiplier <= 0.5:
+    if mult <= 0.5:
         return "Not very effective"
     return "Normal effectiveness"
+
+
+def clean_row(row, name):
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, float) and v != v:
+            out[k] = None
+        else:
+            out[k] = v
+    out["name"] = name
+    return out
 
 
 @app.route("/")
@@ -95,67 +96,100 @@ def list_pokemon():
 
 @app.route("/api/predict", methods=["POST"])
 def predict():
-    body = request.get_json(force=True)
-    p1_name = body.get("pokemon1")
-    p2_name = body.get("pokemon2")
+    try:
+        body = request.get_json(force=True) or {}
+        p1_name = body.get("pokemon1")
+        p2_name = body.get("pokemon2")
+        n_sim = int(body.get("n_sim", 200))
+        n_sim = max(20, min(n_sim, 2000))
 
-    if p1_name not in stats_lookup or p2_name not in stats_lookup:
-        return jsonify({"error": "Unknown Pokemon name"}), 400
-    if p1_name == p2_name:
-        return jsonify({"error": "Pick two different Pokemon"}), 400
+        if p1_name not in stats_lookup or p2_name not in stats_lookup:
+            return jsonify({"error": "Unknown Pokemon name"}), 400
+        if p1_name == p2_name:
+            return jsonify({"error": "Pick two different Pokemon"}), 400
 
-    p1 = stats_lookup[p1_name]
-    p2 = stats_lookup[p2_name]
+        p1 = clean_row(stats_lookup[p1_name], p1_name)
+        p2 = clean_row(stats_lookup[p2_name], p2_name)
 
-    feats = build_features(p1, p2)
-    X = pd.DataFrame([feats])[feature_columns]
+        feats = build_features(p1, p2)
+        X = pd.DataFrame([feats])[feature_columns]
+        win_prob_p1 = float(model.predict_proba(X)[0, 1])
 
-    win_prob_p1 = float(model.predict_proba(X)[0, 1])
+        scaler = model.named_steps["standardscaler"]
+        logreg = model.named_steps["logisticregression"]
+        scaled_values = scaler.transform(X)[0]
+        coefs = logreg.coef_[0]
+        contributions = [
+            {
+                "feature": feature_columns[i],
+                "label": FEATURE_LABELS.get(feature_columns[i], feature_columns[i]),
+                "contribution": float(coefs[i] * scaled_values[i]),
+            }
+            for i in range(len(feature_columns))
+        ]
+        contributions.sort(key=lambda c: abs(c["contribution"]), reverse=True)
 
-    scaler = model.named_steps["standardscaler"]
-    logreg = model.named_steps["logisticregression"]
-    scaled_values = scaler.transform(X)[0]
-    coefs = logreg.coef_[0]
-    contributions = [
-        {
-            "feature": feature_columns[i],
-            "label": FEATURE_LABELS.get(feature_columns[i], feature_columns[i]),
-            "contribution": float(coefs[i] * scaled_values[i]),
+        p1_moves = all_moves(p1, p2)
+        p2_moves = all_moves(p2, p1)
+        for m in p1_moves:
+            m["effectiveness"] = effectiveness_label(m["multiplier"])
+        for m in p2_moves:
+            m["effectiveness"] = effectiveness_label(m["multiplier"])
+
+        replay_rng = random.Random()
+        replay_winner, replay_turns, replay_log = simulate_battle(
+            p1, p2, replay_rng, return_log=True
+        )
+
+        sim_rng = random.Random()
+        p1_wins = 0
+        turns_list = []
+        for _ in range(n_sim):
+            w, t = simulate_battle(p1, p2, sim_rng)
+            turns_list.append(t)
+            if w == p1_name:
+                p1_wins += 1
+
+        turns_hist = Counter(turns_list)
+        turns_histogram = {
+            str(k): turns_hist.get(k, 0)
+            for k in range(1, max(turns_list) + 1)
         }
-        for i in range(len(feature_columns))
-    ]
-    contributions.sort(key=lambda c: abs(c["contribution"]), reverse=True)
 
-    # move analysis: which move each side would actually pick against
-    # THIS opponent, and how effective it is -- the "analyze moves against
-    # the other Pokemon" feature.
-    p1_move = best_move(p1, p2)
-    p2_move = best_move(p2, p1)
+        stat_labels = ["HP", "Attack", "Defense", "Sp. Atk", "Sp. Def", "Speed"]
+        stat_keys = ["hp", "attack", "defense", "sp_atk", "sp_def", "speed"]
 
-    return jsonify({
-        "pokemon1": p1_name,
-        "pokemon2": p2_name,
-        "win_prob_1": win_prob_p1,
-        "win_prob_2": 1 - win_prob_p1,
-        "winner": p1_name if win_prob_p1 >= 0.5 else p2_name,
-        "top_factors": contributions[:5],
-        "move_analysis": {
-            "pokemon1": {
-                "move_type": p1_move["move_type"],
-                "category": p1_move["category"],
-                "multiplier": p1_move["multiplier"],
-                "effectiveness": effectiveness_label(p1_move["multiplier"]),
-                "estimated_damage": round(p1_move["damage"], 1),
+        return jsonify({
+            "pokemon1": {"name": p1_name, "type1": p1["type1"], "type2": p1["type2"]},
+            "pokemon2": {"name": p2_name, "type1": p2["type1"], "type2": p2["type2"]},
+            "win_prob_1": win_prob_p1,
+            "win_prob_2": 1 - win_prob_p1,
+            "winner": p1_name if win_prob_p1 >= 0.5 else p2_name,
+            "top_factors": contributions[:8],
+            "moves": {"pokemon1": p1_moves, "pokemon2": p2_moves},
+            "stat_radar": {
+                "labels": stat_labels,
+                "pokemon1": [p1[k] for k in stat_keys],
+                "pokemon2": [p2[k] for k in stat_keys],
             },
-            "pokemon2": {
-                "move_type": p2_move["move_type"],
-                "category": p2_move["category"],
-                "multiplier": p2_move["multiplier"],
-                "effectiveness": effectiveness_label(p2_move["multiplier"]),
-                "estimated_damage": round(p2_move["damage"], 1),
+            "replay": {
+                "winner": replay_winner,
+                "turns": replay_turns,
+                "log": replay_log,
             },
-        },
-    })
+            "simulation": {
+                "n": n_sim,
+                "p1_wins": p1_wins,
+                "p2_wins": n_sim - p1_wins,
+                "p1_win_rate": p1_wins / n_sim,
+                "mean_turns": sum(turns_list) / len(turns_list),
+                "turns_histogram": turns_histogram,
+            },
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
 
 if __name__ == "__main__":

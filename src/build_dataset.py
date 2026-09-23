@@ -11,10 +11,19 @@ If data/pokemon_stats_raw.csv isn't present, falls back to a smaller
 pipeline still runs end-to-end without the real file.
 """
 import os
+import sys
+from pathlib import Path
+
+# Allow `from build_dataset_fallback import POKEMON` no matter where this
+# file is invoked from.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import pandas as pd
 
-RAW_PATH = "data/pokemon_stats_raw.csv"
-OUT_PATH = "data/pokemon_stats.csv"
+ROOT = Path(__file__).resolve().parent.parent
+RAW_PATH = ROOT / "data" / "pokemon_stats_raw.csv"
+OUT_PATH = ROOT / "data" / "pokemon_stats.csv"
+OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 COLUMN_MAP = {
     "name": "name",

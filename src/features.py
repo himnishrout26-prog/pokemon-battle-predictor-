@@ -1,66 +1,68 @@
 """
 Feature engineering for the battle predictor.
 
-Deliberately does NOT feed raw stats straight into the model. Instead it
-builds differentials and matchup scores, the same quantities a player
-would actually reason about ("who's faster", "who hits harder", "which
-move actually connects best here"), because those transfer better than
-raw numbers and are far more interpretable later.
+Deliberately does NOT feed raw stats straight into the model. It builds
+differentials and a type-matchup score -- the same quantities a player
+would reason about ("who's faster", "whose typing lines up better here").
 
-The "best move" features come from src/movesets.py: for each side, we
-work out which move in its (synthetic) movepool does the most damage to
-THIS SPECIFIC opponent, not just a generic STAB estimate. That's the
-"analyze moves against the other Pokemon" piece.
+Design note on what is and isn't included:
+
+- We DO include the type-effectiveness multiplier (from type_chart.py),
+  because it's a static property of the two Pokemon's typings. The
+  simulator still has to combine it with stats to compute damage.
+- We DO NOT include best_move()["damage"] or any other output of the
+  simulator's damage formula. Those caused the model to just re-derive
+  the simulator's own math instead of learning to predict outcomes.
+- We DO NOT include base_stat_total_diff -- it's a linear combination of
+  the six stat diffs already present, and letting trees split on it
+  collapses the model back into a single-feature stat lookup.
 """
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import pandas as pd
 from type_chart import type_multiplier
-from movesets import best_move
+
+ROOT = Path(__file__).resolve().parent.parent
+
+STAT_NAMES = ("hp", "attack", "defense", "sp_atk", "sp_def", "speed")
+
+
+def _defending_types(pokemon):
+    return [pokemon["type1"], pokemon.get("type2")]
 
 
 def build_features(p1, p2):
-    """p1, p2: dict-like rows (name/type1/type2/hp/attack/defense/sp_atk/sp_def/speed).
-    Returns a flat dict of features, always framed as p1-vs-p2 so it's symmetric-safe
-    (swap p1/p2 and every feature flips sign / inverts, which we rely on for augmentation)."""
+    """p1, p2: dict-like rows with name/type1/type2/<stats>.
+
+    Returns a flat dict of features framed as p1-vs-p2. Every signed
+    feature flips sign under a p1/p2 swap, which the tests rely on."""
     f = {}
 
-    f["hp_diff"] = p1["hp"] - p2["hp"]
-    f["attack_diff"] = p1["attack"] - p2["attack"]
-    f["defense_diff"] = p1["defense"] - p2["defense"]
-    f["sp_atk_diff"] = p1["sp_atk"] - p2["sp_atk"]
-    f["sp_def_diff"] = p1["sp_def"] - p2["sp_def"]
-    f["speed_diff"] = p1["speed"] - p2["speed"]
-    f["speed_advantage"] = 1 if p1["speed"] > p2["speed"] else (-1 if p1["speed"] < p2["speed"] else 0)
+    for stat in STAT_NAMES:
+        f[f"{stat}_diff"] = p1[stat] - p2[stat]
 
-    bst1 = p1["hp"] + p1["attack"] + p1["defense"] + p1["sp_atk"] + p1["sp_def"] + p1["speed"]
-    bst2 = p2["hp"] + p2["attack"] + p2["defense"] + p2["sp_atk"] + p2["sp_def"] + p2["speed"]
-    f["base_stat_total_diff"] = bst1 - bst2
+    f["speed_advantage"] = (p1["speed"] > p2["speed"]) - (p1["speed"] < p2["speed"])
 
-    # type matchup: how well p1's primary type hits p2, and vice versa
-    p1_types = [p1["type1"], p1.get("type2")]
-    p2_types = [p2["type1"], p2.get("type2")]
-    f["p1_type_advantage"] = type_multiplier(p1["type1"], p2_types)
-    f["p2_type_advantage"] = type_multiplier(p2["type1"], p1_types)
-    f["type_advantage_diff"] = f["p1_type_advantage"] - f["p2_type_advantage"]
-
-    # best-move analysis: which move from each side's movepool hits hardest
-    # against THIS specific opponent -- this replaces the old generic
-    # "effective power" estimate with the actual optimal-move logic.
-    p1_best = best_move(p1, p2)
-    p2_best = best_move(p2, p1)
-    f["p1_effective_power"] = p1_best["damage"]
-    f["p2_effective_power"] = p2_best["damage"]
-    f["effective_power_diff"] = p1_best["damage"] - p2_best["damage"]
-    f["effective_power_ratio"] = p1_best["damage"] / max(p2_best["damage"], 0.01)
-    f["p1_best_move_multiplier"] = p1_best["multiplier"]
-    f["p2_best_move_multiplier"] = p2_best["multiplier"]
-    f["best_move_multiplier_diff"] = p1_best["multiplier"] - p2_best["multiplier"]
-
-    # rough "turns to KO" estimate -- ties best-move damage to opponent's HP pool
-    f["p1_ttk_estimate"] = p2["hp"] * 2 / max(p1_best["damage"], 0.01)
-    f["p2_ttk_estimate"] = p1["hp"] * 2 / max(p2_best["damage"], 0.01)
-    f["ttk_diff"] = f["p2_ttk_estimate"] - f["p1_ttk_estimate"]  # positive favors p1 (p1 kills faster)
+    # Type matchup edge. Uses ONLY the type chart -- no damage formula,
+    # no best_move() call -- so the model can't read the simulator's
+    # damage output off its inputs. It has to combine this with stat
+    # diffs itself.
+    p1_adv = type_multiplier(p1["type1"], _defending_types(p2))
+    p2_adv = type_multiplier(p2["type1"], _defending_types(p1))
+    f["type_advantage_diff"] = p1_adv - p2_adv
 
     return f
+
+
+# Subset used for the "stat-only baseline" comparison in train.py.
+STAT_ONLY_FEATURES = [
+    "hp_diff", "attack_diff", "defense_diff",
+    "sp_atk_diff", "sp_def_diff", "speed_diff",
+    "speed_advantage",
+]
 
 
 def build_feature_dataframe(battles_df, stats_df):
@@ -80,9 +82,9 @@ def build_feature_dataframe(battles_df, stats_df):
 
 
 if __name__ == "__main__":
-    stats = pd.read_csv("data/pokemon_stats.csv")
-    battles = pd.read_csv("data/battles.csv")
+    stats = pd.read_csv(ROOT / "data" / "pokemon_stats.csv")
+    battles = pd.read_csv(ROOT / "data" / "battles.csv")
     features = build_feature_dataframe(battles, stats)
-    features.to_csv("data/features.csv", index=False)
+    features.to_csv(ROOT / "data" / "features.csv", index=False)
     print(f"Built {len(features)} feature rows, {features.shape[1] - 1} features")
     print(features.columns.tolist())
